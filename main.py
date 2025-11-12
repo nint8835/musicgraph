@@ -8,13 +8,12 @@ musicbrainzngs.set_useragent("musicgraph", "0.1", "riley@rileyflynn.me")
 musicbrainzngs.set_rate_limit()
 
 ROOT_ARTIST_ID = "c39e3739-f8a2-48e4-9485-880c3b721879"
-MAX_ARTIST_DISTANCE = 5
+MAX_ARTIST_DISTANCE = 7
 
 graph = networkx.DiGraph()
 
 resp = musicbrainzngs.get_artist_by_id(ROOT_ARTIST_ID, includes=["artist-rels"])
 
-labels = {}
 visited_nodes = set()
 pending_nodes: set[str] = set()
 
@@ -48,7 +47,9 @@ def walk_node(artist_id: str):
 
     resp = get_artist_by_id(artist_id)
     artist_name = resp["artist"]["name"]
-    labels[artist_id] = artist_name
+
+    if artist_id not in graph:
+        graph.add_node(artist_id, label=artist_name)
 
     rels = resp["artist"].get("artist-relation-list", [])
     for rel in rels:
@@ -61,9 +62,8 @@ def walk_node(artist_id: str):
             else (target_id, artist_id)
         )
 
-        graph.add_node(target_id)
+        graph.add_node(target_id, label=rel["artist"]["name"])
         graph.add_edge(*edge, label=rel_type)
-        labels[target_id] = rel["artist"]["name"]
 
         if target_id not in visited_nodes:
             pending_nodes.add(target_id)
@@ -75,9 +75,5 @@ while pending_nodes:
     print(f"{len(visited_nodes)} visited, {len(pending_nodes)} pending")
     current_node = pending_nodes.pop()
     walk_node(current_node)
-
-
-# TODO: This changes the IDs to names, which could theoretically cause collisions.
-graph = networkx.relabel_nodes(graph, labels)
 
 networkx.nx_pydot.write_dot(graph, "graph.dot")
