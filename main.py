@@ -1,75 +1,78 @@
-import time
-from typing import Any
-
-import musicbrainzngs
 import networkx
+import psycopg
 
-musicbrainzngs.set_useragent("musicgraph", "0.1", "riley@rileyflynn.me")
-musicbrainzngs.set_rate_limit()
-
-ROOT_ARTIST_ID = "c39e3739-f8a2-48e4-9485-880c3b721879"
+ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
 MAX_ARTIST_DISTANCE = 7
+
+conn = psycopg.connect(
+    "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost"
+)
 
 graph = networkx.DiGraph()
 
-resp = musicbrainzngs.get_artist_by_id(ROOT_ARTIST_ID, includes=["artist-rels"])
-
-visited_nodes = set()
-pending_nodes: set[str] = set()
+visited_nodes: set[int] = set()
+pending_nodes: set[int] = set()
 
 
-def get_artist_by_id(
-    artist_id: str,
-) -> Any:
-    tries = 0
-
-    while tries < 10:
-        try:
-            resp = musicbrainzngs.get_artist_by_id(artist_id, includes=["artist-rels"])
-            return resp
-        except musicbrainzngs.NetworkError:
-            time.sleep(0.5)
-            tries += 1
+def resolve_artist(guid: str) -> int:
+    return conn.execute("SELECT id FROM artist WHERE gid = %s", (guid,)).fetchone()[0]
 
 
-def walk_node(artist_id: str):
+root_artist_id = resolve_artist(ROOT_ARTIST_GUID)
+
+
+def walk_node(artist_id: int) -> None:
     if artist_id in visited_nodes:
         return
     visited_nodes.add(artist_id)
 
     if artist_id in graph:
         distance = networkx.shortest_path_length(
-            graph.to_undirected(), ROOT_ARTIST_ID, artist_id
+            graph.to_undirected(), root_artist_id, artist_id
         )
         if distance > MAX_ARTIST_DISTANCE:
             print(f"Skipping {artist_id} at distance {distance}")
             return
+    else:
+        name = conn.execute(
+            "SELECT name FROM artist WHERE id = %s", (artist_id,)
+        ).fetchone()[0]
+        graph.add_node(artist_id, label=name)
 
-    resp = get_artist_by_id(artist_id)
-    artist_name = resp["artist"]["name"]
+    rels = conn.execute(
+        """
+        SELECT
+            l_artist_artist.entity0,
+            l_artist_artist.entity1,
+            link_type.name,
+            a0."name",
+            a1."name"
+        FROM
+            l_artist_artist
+            JOIN link ON link.id = l_artist_artist."link"
+            JOIN link_type ON link_type.id = link.link_type
+            JOIN artist a0 ON a0.id = l_artist_artist.entity0
+            JOIN artist a1 ON a1.id = l_artist_artist.entity1
+        WHERE
+            l_artist_artist.entity0 = %s OR l_artist_artist.entity1 = %s
+        """,
+        (artist_id, artist_id),
+    ).fetchall()
 
-    if artist_id not in graph:
-        graph.add_node(artist_id, label=artist_name)
+    for entity0, entity1, rel_type, artist_0, artist_1 in rels:
+        if not graph.has_node(entity0):
+            graph.add_node(entity0, label=artist_0)
+        if not graph.has_node(entity1):
+            graph.add_node(entity1, label=artist_1)
+        if not graph.has_edge(entity0, entity1):
+            graph.add_edge(entity0, entity1, label=rel_type)
 
-    rels = resp["artist"].get("artist-relation-list", [])
-    for rel in rels:
-        target_id = rel["artist"]["id"]
-        rel_type = rel["type"]
-
-        edge = (
-            (artist_id, target_id)
-            if rel["direction"] == "forward"
-            else (target_id, artist_id)
-        )
-
-        graph.add_node(target_id, label=rel["artist"]["name"])
-        graph.add_edge(*edge, label=rel_type)
-
-        if target_id not in visited_nodes:
-            pending_nodes.add(target_id)
+        other_artist_id = entity1 if entity0 == artist_id else entity0
+        if other_artist_id not in visited_nodes:
+            pending_nodes.add(other_artist_id)
 
 
-pending_nodes.add(ROOT_ARTIST_ID)
+pending_nodes.add(root_artist_id)
 
 while pending_nodes:
     print(f"{len(visited_nodes)} visited, {len(pending_nodes)} pending")
