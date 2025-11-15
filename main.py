@@ -1,7 +1,7 @@
 import networkx
 import psycopg
 
-ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
+ROOT_ARTIST_GUID = "0356daee-ec48-4495-bc3e-460b8a5eacad"
 MAX_ARTIST_DISTANCE = 7
 
 conn = psycopg.connect(
