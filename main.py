@@ -5,9 +5,6 @@ import networkx
 import psycopg
 import pydot
 
-ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
-MAX_ARTIST_DISTANCE = 100
-
 conn = psycopg.connect(
     "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost",
     prepare_threshold=0,
@@ -16,136 +13,30 @@ conn = psycopg.connect(
 
 graph = networkx.Graph()
 
-visited_nodes: set[int] = set()
-pending_nodes: set[int] = set()
-distance: dict[int, int] = {}
-
-
-def resolve_artist(guid: str) -> int:
-    return conn.execute(
-        "SELECT id FROM artist WHERE gid = %s",
-        (guid,),
-    ).fetchone()[0]
-
 
 @lru_cache(maxsize=None)
 def sanitize_artist_name(name: str) -> str:
     return pydot.make_quoted(name.replace("\\", "\\\\"))
 
 
-root_artist_id = resolve_artist(ROOT_ARTIST_GUID)
+artists = conn.execute("SELECT id, gid, name FROM artist").fetchall()
+for artist_id, artist_gid, artist_name in artists:
+    graph.add_node(
+        artist_id,
+        gid=artist_gid,
+        label=sanitize_artist_name(artist_name),
+    )
 
-
-def walk_node(artist_id: int) -> None:
-    if artist_id in visited_nodes:
-        return
-    visited_nodes.add(artist_id)
-
-    if artist_id in distance:
-        artist_distance = distance[artist_id]
-        if artist_distance > MAX_ARTIST_DISTANCE:
-            return
-    else:
-        name, guid = conn.execute(
-            "SELECT name, gid FROM artist WHERE id = %s", (artist_id,)
-        ).fetchone()
-        graph.add_node(artist_id, label=sanitize_artist_name(name), guid=guid)
-
-    rels = conn.execute(
-        """
-        SELECT
-            l_artist_artist.entity0,
-            l_artist_artist.entity1,
-            link_type.name,
-            a0."name",
-            a0.gid,
-            a1."name",
-            a1.gid
-        FROM
-            l_artist_artist
-            JOIN link ON link.id = l_artist_artist."link"
-            JOIN link_type ON link_type.id = link.link_type
-            JOIN artist a0 ON a0.id = l_artist_artist.entity0
-            JOIN artist a1 ON a1.id = l_artist_artist.entity1
-        WHERE
-            (
-                l_artist_artist.entity0 = %s
-                OR l_artist_artist.entity1 = %s
-            )
-        UNION ALL
-        SELECT DISTINCT
-            l_artist_recording.entity0,
-            artist.id,
-            'credited on release',
-            a0."name",
-            a0.gid,
-            artist.name,
-            artist.gid
-        FROM
-            l_artist_recording
-            JOIN recording ON recording.id = l_artist_recording.entity1
-            JOIN artist_credit_name ON artist_credit_name.artist_credit = recording.artist_credit
-            JOIN artist ON artist.id = artist_credit_name.artist
-            JOIN artist a0 ON a0.id = l_artist_recording.entity0
-        WHERE
-            l_artist_recording.entity0 = %s
-            AND artist.id <> %s
-        UNION ALL
-        SELECT DISTINCT
-            l_artist_recording.entity0,
-            artist.id,
-            'credited on release',
-            a0."name",
-            a0.gid,
-            artist.name,
-            artist.gid
-        FROM
-            artist
-            JOIN artist_credit_name ON artist_credit_name.artist = artist.id
-            JOIN recording ON recording.artist_credit = artist_credit_name.artist_credit
-            JOIN l_artist_recording ON l_artist_recording.entity1 = recording.id
-            JOIN artist a0 ON a0.id = l_artist_recording.entity0
-        WHERE
-            artist.id = %s
-            AND l_artist_recording.entity0 <> %s;
-        """,
-        (artist_id, artist_id, artist_id, artist_id, artist_id, artist_id),
-    ).fetchall()
-
-    for (
+connections = conn.execute(
+    "SELECT entity0, entity1, relationship FROM artist_graph_edges"
+).fetchall()
+for entity0, entity1, relationship in connections:
+    graph.add_edge(
         entity0,
         entity1,
-        rel_type,
-        artist_0,
-        artist_0_guid,
-        artist_1,
-        artist_1_guid,
-    ) in rels:
-        graph.add_node(
-            entity0, label=sanitize_artist_name(artist_0), guid=artist_0_guid
-        )
-        graph.add_node(
-            entity1, label=sanitize_artist_name(artist_1), guid=artist_1_guid
-        )
-        if not graph.has_edge(entity0, entity1):
-            graph.add_edge(entity0, entity1, label=rel_type)
+        label=relationship,
+    )
 
-        other_artist_id = entity1 if entity0 == artist_id else entity0
-        if other_artist_id not in distance:
-            pending_nodes.add(other_artist_id)
-            distance[other_artist_id] = distance[artist_id] + 1
-
-
-pending_nodes.add(root_artist_id)
-distance[root_artist_id] = 0
-
-while pending_nodes:
-    if len(visited_nodes) % 1000 == 0:
-        print(f"{len(visited_nodes)} visited, {len(pending_nodes)} pending")
-    current_node = pending_nodes.pop()
-    walk_node(current_node)
 
 with open("graph.pkl", "wb") as f:
     pickle.dump(graph, f)
-
-networkx.nx_pydot.write_dot(graph, "graph.dot")

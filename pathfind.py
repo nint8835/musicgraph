@@ -21,8 +21,8 @@ def resolve_artist(guid: str) -> int:
 with open("graph.pkl", "rb") as f:
     graph = pickle.load(f)
 
-ROOT_ARTIST_ID = "aba64937-3334-4c65-90a1-4e6b9d4d7ada"
-TARGET_ARTIST_ID = "84825fb6-c98c-4b43-a184-c7f70619f355"
+ROOT_ARTIST_ID = "fdfb6b9c-575d-4abb-9a15-4fbceec0dfa3"
+TARGET_ARTIST_ID = "47c8f88b-987a-4b64-9175-2b1b57809727"
 
 # Weigh certain artists higher to attempt to avoid them, for example certain giant collaborations
 artist_link_factors: dict[int, float] = defaultdict(
