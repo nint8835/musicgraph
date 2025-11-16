@@ -6,7 +6,7 @@ import psycopg
 import pydot
 
 ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
-MAX_ARTIST_DISTANCE = 15
+MAX_ARTIST_DISTANCE = 100
 
 conn = psycopg.connect(
     "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost",
@@ -43,8 +43,8 @@ def walk_node(artist_id: int) -> None:
 
     if artist_id in distance:
         artist_distance = distance[artist_id]
-        # if artist_distance > MAX_ARTIST_DISTANCE:
-        #     return
+        if artist_distance > MAX_ARTIST_DISTANCE:
+            return
     else:
         name, guid = conn.execute(
             "SELECT name, gid FROM artist WHERE id = %s", (artist_id,)
@@ -90,8 +90,26 @@ def walk_node(artist_id: int) -> None:
         WHERE
             l_artist_recording.entity0 = %s
             AND artist.id <> %s
+        UNION ALL
+        SELECT DISTINCT
+            l_artist_recording.entity0,
+            artist.id,
+            'credited on release',
+            a0."name",
+            a0.gid,
+            artist.name,
+            artist.gid
+        FROM
+            artist
+            JOIN artist_credit_name ON artist_credit_name.artist = artist.id
+            JOIN recording ON recording.artist_credit = artist_credit_name.artist_credit
+            JOIN l_artist_recording ON l_artist_recording.entity1 = recording.id
+            JOIN artist a0 ON a0.id = l_artist_recording.entity0
+        WHERE
+            artist.id = %s
+            AND l_artist_recording.entity0 <> %s;
         """,
-        (artist_id, artist_id, artist_id, artist_id),
+        (artist_id, artist_id, artist_id, artist_id, artist_id, artist_id),
     ).fetchall()
 
     for (
