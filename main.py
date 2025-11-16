@@ -1,14 +1,17 @@
+import pickle
+from functools import lru_cache
+
 import networkx
 import psycopg
 import pydot
 
 ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
-# Target artist for pathfinding to be logged separately
-PATHFINDING_TARGET_ARTIST_GUID = "0356daee-ec48-4495-bc3e-460b8a5eacad"
 MAX_ARTIST_DISTANCE = 15
 
 conn = psycopg.connect(
-    "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost"
+    "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost",
+    prepare_threshold=0,
+    prepared_max=None,
 )
 
 graph = networkx.Graph()
@@ -19,9 +22,13 @@ distance: dict[int, int] = {}
 
 
 def resolve_artist(guid: str) -> int:
-    return conn.execute("SELECT id FROM artist WHERE gid = %s", (guid,)).fetchone()[0]
+    return conn.execute(
+        "SELECT id FROM artist WHERE gid = %s",
+        (guid,),
+    ).fetchone()[0]
 
 
+@lru_cache(maxsize=None)
 def sanitize_artist_name(name: str) -> str:
     return pydot.make_quoted(name.replace("\\", "\\\\"))
 
@@ -61,10 +68,30 @@ def walk_node(artist_id: int) -> None:
             JOIN artist a0 ON a0.id = l_artist_artist.entity0
             JOIN artist a1 ON a1.id = l_artist_artist.entity1
         WHERE
-            (l_artist_artist.entity0 = %s OR l_artist_artist.entity1 = %s)
-            AND link_type.name NOT IN ('parent', 'sibling', 'married', 'involved with', 'teacher', 'named after artist')
+            (
+                l_artist_artist.entity0 = %s
+                OR l_artist_artist.entity1 = %s
+            )
+        UNION ALL
+        SELECT DISTINCT
+            l_artist_recording.entity0,
+            artist.id,
+            'credited on release',
+            a0."name",
+            a0.gid,
+            artist.name,
+            artist.gid
+        FROM
+            l_artist_recording
+            JOIN recording ON recording.id = l_artist_recording.entity1
+            JOIN artist_credit_name ON artist_credit_name.artist_credit = recording.artist_credit
+            JOIN artist ON artist.id = artist_credit_name.artist
+            JOIN artist a0 ON a0.id = l_artist_recording.entity0
+        WHERE
+            l_artist_recording.entity0 = %s
+            AND artist.id <> %s
         """,
-        (artist_id, artist_id),
+        (artist_id, artist_id, artist_id, artist_id),
     ).fetchall()
 
     for (
@@ -76,19 +103,17 @@ def walk_node(artist_id: int) -> None:
         artist_1,
         artist_1_guid,
     ) in rels:
-        if not graph.has_node(entity0):
-            graph.add_node(
-                entity0, label=sanitize_artist_name(artist_0), guid=artist_0_guid
-            )
-        if not graph.has_node(entity1):
-            graph.add_node(
-                entity1, label=sanitize_artist_name(artist_1), guid=artist_1_guid
-            )
+        graph.add_node(
+            entity0, label=sanitize_artist_name(artist_0), guid=artist_0_guid
+        )
+        graph.add_node(
+            entity1, label=sanitize_artist_name(artist_1), guid=artist_1_guid
+        )
         if not graph.has_edge(entity0, entity1):
             graph.add_edge(entity0, entity1, label=rel_type)
 
         other_artist_id = entity1 if entity0 == artist_id else entity0
-        if other_artist_id not in visited_nodes:
+        if other_artist_id not in distance:
             pending_nodes.add(other_artist_id)
             distance[other_artist_id] = distance[artist_id] + 1
 
@@ -102,19 +127,7 @@ while pending_nodes:
     current_node = pending_nodes.pop()
     walk_node(current_node)
 
+with open("graph.pkl", "wb") as f:
+    pickle.dump(graph, f)
+
 networkx.nx_pydot.write_dot(graph, "graph.dot")
-
-
-path = networkx.shortest_path(
-    graph,
-    resolve_artist(ROOT_ARTIST_GUID),
-    resolve_artist(PATHFINDING_TARGET_ARTIST_GUID),
-)
-
-for i in range(len(path) - 2 + 1):
-    from_node, to_node = path[i], path[i + 1]
-    edge_data = graph.get_edge_data(from_node, to_node)
-    rel_type = edge_data["label"]
-    from_name = graph.nodes[from_node]["label"]
-    to_name = graph.nodes[to_node]["label"]
-    print(f"{from_name} <--[{rel_type}]--> {to_name}")
