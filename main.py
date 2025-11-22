@@ -1,8 +1,11 @@
+import json
+import sys
+
 import networkx
 import psycopg
 
 ROOT_ARTIST_GUID = "c39e3739-f8a2-48e4-9485-880c3b721879"
-MAX_ARTIST_DISTANCE = 7
+MAX_ARTIST_DISTANCE = int(sys.argv[1])
 
 conn = psycopg.connect(
     "user=musicbrainz password=musicbrainz dbname=musicbrainz_db host=localhost"
@@ -12,6 +15,11 @@ graph = networkx.DiGraph()
 
 visited_nodes: set[int] = set()
 pending_nodes: set[int] = set()
+
+nodes: set[str] = set()
+node_names: dict[str, str] = {}
+links: set[tuple[str, str]] = set()
+link_types: dict[tuple[str, str], str] = {}
 
 
 def resolve_artist(guid: str) -> int:
@@ -38,6 +46,8 @@ def walk_node(artist_id: int) -> None:
             "SELECT name FROM artist WHERE id = %s", (artist_id,)
         ).fetchone()[0]
         graph.add_node(artist_id, label=name)
+        nodes.add(artist_id)
+        node_names[artist_id] = name
 
     rels = conn.execute(
         """
@@ -62,10 +72,16 @@ def walk_node(artist_id: int) -> None:
     for entity0, entity1, rel_type, artist_0, artist_1 in rels:
         if not graph.has_node(entity0):
             graph.add_node(entity0, label=artist_0)
+            nodes.add(entity0)
+            node_names[entity0] = artist_0
         if not graph.has_node(entity1):
             graph.add_node(entity1, label=artist_1)
+            nodes.add(entity1)
+            node_names[entity1] = artist_1
         if not graph.has_edge(entity0, entity1):
             graph.add_edge(entity0, entity1, label=rel_type)
+            links.add((entity0, entity1))
+            link_types[(entity0, entity1)] = rel_type
 
         other_artist_id = entity1 if entity0 == artist_id else entity0
         if other_artist_id not in visited_nodes:
@@ -80,3 +96,18 @@ while pending_nodes:
     walk_node(current_node)
 
 networkx.nx_pydot.write_dot(graph, "graph.dot")
+
+with open(
+    f"visualization/graphs/{MAX_ARTIST_DISTANCE}.json", "w", encoding="utf-8"
+) as f:
+    json.dump(
+        {
+            "nodes": [{"id": n, "label": node_names[n]} for n in nodes],
+            "links": [
+                {"source": s, "target": t, "type": link_types[(s, t)]} for s, t in links
+            ],
+        },
+        f,
+        indent=2,
+        sort_keys=True,
+    )
